@@ -129,7 +129,7 @@ typedef struct parameters
 ppeb_parameters myParameters;
 
 
-int restore_parameters(PEB* pebAddress)
+int restore_parameters(PEB* pebAddress) /*To restore the old values of PEB->Parameters*/
 {
 	pebAddress->ProcessParameters->CurrentDirectoryPath = myParameters->CurrentDirectoryPath;
 	pebAddress->ProcessParameters->DllPath = myParameters->DllPath;
@@ -151,12 +151,15 @@ int modify_parameters(PEB* pebAddress)
 	myRtlAnsiStringToUnicodeString RtlAnsiStringToUnicodeString = (myRtlAnsiStringToUnicodeString)GetProcAddress(LoadLibraryA("ntdll.dll"), "RtlAnsiStringToUnicodeString");
 	myRtlInitAnsiString RtlInitAnsiString = (myRtlInitAnsiString)GetProcAddress(LoadLibraryA("ntdll.dll"), "RtlInitAnsiString");
 	myRtlCopyUnicodeString RtlCopyUnicodeString = (myRtlCopyUnicodeString)GetProcAddress(LoadLibraryA("ntdll.dll"), "RtlCopyUnicodeString");
+	/*To play with UNICODE_STRING*/
 	ANSI_STRING string;
 	UNICODE_STRING string_unicode;
-	RtlInitAnsiString(&string, input_fuzzer);
-	RtlAnsiStringToUnicodeString(&string_unicode, &string, TRUE);
+	RtlInitAnsiString(&string, input_fuzzer); /*Convert fuzzer input into UNICODE*/
+	RtlAnsiStringToUnicodeString(&string_unicode, &string, TRUE); /*Init UNICODE_STRING (lives in heap)*/
 
-	memcpy(&myParameters->CurrentDirectoryPath, &pebAddress->ProcessParameters->CurrentDirectoryPath, sizeof(UNICODE_STRING));
+
+	/*This will save old parameters to restore before exiting, else crashes the fuzzer */
+	memcpy(&myParameters->CurrentDirectoryPath, &pebAddress->ProcessParameters->CurrentDirectoryPath, sizeof(UNICODE_STRING)); 
 	memcpy(&myParameters->DllPath, &pebAddress->ProcessParameters->DllPath, sizeof(UNICODE_STRING));
 	memcpy(&myParameters->ImagePathName, &pebAddress->ProcessParameters->ImagePathName, sizeof(UNICODE_STRING));
 	memcpy(&myParameters->CommandLine, &pebAddress->ProcessParameters->CommandLine, sizeof(UNICODE_STRING));
@@ -166,7 +169,7 @@ int modify_parameters(PEB* pebAddress)
 	memcpy(&myParameters->RuntimeData, &pebAddress->ProcessParameters->RuntimeData, sizeof(UNICODE_STRING));
 	memcpy(&myParameters->DosPath, &pebAddress->ProcessParameters->DLCurrentDirectory->DosPath, sizeof(UNICODE_STRING));
 
-
+	/*Update the UNICODE of ProcessParameters*/
 	pebAddress->ProcessParameters->CurrentDirectoryPath = string_unicode;
 	pebAddress->ProcessParameters->DllPath = string_unicode;
 	pebAddress->ProcessParameters->ImagePathName = string_unicode;
@@ -181,7 +184,7 @@ int modify_parameters(PEB* pebAddress)
 
 
 
-	if (RtlFreeUnicodeString)
+	if (RtlFreeUnicodeString) /*If kernel_driver tries to read PEB->ProccessParameter, it would read a freed memory*/
 		RtlFreeUnicodeString(&string_unicode);
 	return 1;
 
@@ -190,40 +193,33 @@ int modify_parameters(PEB* pebAddress)
 
 int modify_ldr(PEB* pebAddress)
 {
-	signed int iSecret; /*To random numbers*/
+	signed int iSecret; /*To generate random numbers*/
 	_PEB_LDR_DATA* LdrData = pebAddress->Ldr; /*Locate _PEB_LDR_DATA*/
 	_LDR_DATA_TABLE_ENTRY* DataTableEntry = (_LDR_DATA_TABLE_ENTRY*)LdrData->InMemoryOrderModuleList.Flink; /*_LDR_DATA_TABLE_ENTRY pointed by _PEB_LDR_DATA->InMemoryOrderModuleList.Flink*/
 	long* newDataTableEntry = (long*)((_LDR_DATA_TABLE_ENTRY*)DataTableEntry->Reserved1); /*Next DataTableEntry pointed by _LDR_DATA_TABLE_ENTRY->Reserved1 (equal to Flink)*/
-	_LDR_DATA_TABLE_ENTRY* data = (_LDR_DATA_TABLE_ENTRY*)newDataTableEntry;
+	_LDR_DATA_TABLE_ENTRY* data = (_LDR_DATA_TABLE_ENTRY*)newDataTableEntry; /*data points to _LDR_DATA_TABLE_ENTRY*/
 	DWORD old;
-	VirtualProtect((void*)newDataTableEntry, 0x1, PAGE_READWRITE, &old);
+	VirtualProtect((void*)newDataTableEntry, 0x1, PAGE_READWRITE, &old); /*Change permissions, fuzzer will want to modify the _LDR_DATA_TABLE_ENTRY*/
 	srand(time(NULL));
 	iSecret = rand() % 0x4000 + (-0x2000);
 	myRtlFreeUnicodeString RtlFreeUnicodeString = (myRtlFreeUnicodeString)GetProcAddress(LoadLibraryA("ntdll.dll"), "RtlFreeUnicodeString");
 	myRtlAnsiStringToUnicodeString RtlAnsiStringToUnicodeString = (myRtlAnsiStringToUnicodeString)GetProcAddress(LoadLibraryA("ntdll.dll"), "RtlAnsiStringToUnicodeString");
 	myRtlInitAnsiString RtlInitAnsiString = (myRtlInitAnsiString)GetProcAddress(LoadLibraryA("ntdll.dll"), "RtlInitAnsiString");
 	myRtlCopyUnicodeString RtlCopyUnicodeString = (myRtlCopyUnicodeString)GetProcAddress(LoadLibraryA("ntdll.dll"), "RtlCopyUnicodeString");
+	/*To play with UNICODE_STRING*/
 	ANSI_STRING string;
 	UNICODE_STRING string_unicode;
-	RtlInitAnsiString(&string, input_fuzzer);
-	RtlAnsiStringToUnicodeString(&string_unicode, &string, TRUE);
-	data->FullDllName = string_unicode;
+	RtlInitAnsiString(&string, input_fuzzer); /*Convert input from fuzzer into UNICODE_STRING*/
+	RtlAnsiStringToUnicodeString(&string_unicode, &string, TRUE); 
+	data->FullDllName = string_unicode; /*Change old PEB->LDR with fuzzer input*/
 	//	RtlCopyUnicodeString(&data->FullDllName, &string_unicode);
 
-		/*if (RtlFreeUnicodeString)
+		/*if (RtlFreeUnicodeString) To free the PEB->LDR, so if EDR driver uses it, what could happen??
 			RtlFreeUnicodeString(&data->FullDllName);*/
-	__try
-	{
 
-		data->FullDllName.Length = iSecret;
-		data->FullDllName.MaximumLength = iSecret;
 
-	}
-	__except (filter(GetExceptionCode()))
-	{
-		data->FullDllName.Length = iSecret;
-		data->FullDllName.MaximumLength = iSecret;
-	}
+	data->FullDllName.Length = iSecret; /*Change length*/
+	data->FullDllName.MaximumLength = iSecret;
 
 	return 1;
 
@@ -232,7 +228,7 @@ extern "C" __declspec(dllexport)  __declspec(noinline) int fuzz(char* data);
 int fuzz(char* data)
 {
 
-	FILE* fp = fopen(data, "rb");
+	FILE* fp = fopen(data, "rb"); /*Fuzzer input*/
 	if (!fp)
 	{
 		printf("error\n");
@@ -240,25 +236,26 @@ int fuzz(char* data)
 	}
 	else
 		fread(input_fuzzer, 0x4000, 1, fp);
-	printf("Data: %s\n", input_fuzzer);
+	printf("Data: %s\n", input_fuzzer); /*Debug purpose*/
 	fclose(fp);
 	printf("Go\n");
 
-	PPEB myPEB = locate_PEB();
-	modify_ldr(myPEB);
-	modify_parameters(myPEB);
+	PPEB myPEB = locate_PEB(); /*Locate PEB address*/
+	modify_ldr(myPEB); /*Function to modify PEB Ldr*/
+	modify_parameters(myPEB); /*Function to modify PEB ProcessParameters*/
 	//hook_ntcreatesection((HANDLE)0xffffffffffffffff);
 
-	hook_ntmap((HANDLE)0xffffffffffffffff);
-
-	HMODULE lib = LoadLibraryA("C:\\Windows\\System32\\calc.exe");
-	FreeLibrary(lib);
-	HANDLE process = OpenProcess(PROCESS_ALL_ACCESS, NULL, 796);
+	hook_ntmap((HANDLE)0xffffffffffffffff); 
+	/*Hook NtMapViewOfSection, so before the calc.exe image is loaded in memory we can modify our PE headers and add our fuzzer input*/
+	HMODULE lib = LoadLibraryA("C:\\Windows\\System32\\calc.exe"); /*To trigger LoadImageCallback in kernel side*/
+	FreeLibrary(lib); /*Freelibrary later*/
+	HANDLE process = OpenProcess(PROCESS_ALL_ACCESS, NULL, 796); /*To trigger ObRegisterCallbacks -- Modify PID to include existing PID*/
+	/*Yes, i am to lazy to look for good PID in the code*/
 	if (!process)
 	{
 		printf("error\n");
 	}
-	restore_parameters(myPEB);
+	restore_parameters(myPEB); /*If we don´t restore parameters the process crashes and the fuzzer doesn´t work*/
 	printf("exiting\n");
 	return 0;
 }

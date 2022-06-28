@@ -207,7 +207,6 @@ typedef NTSYSAPI NTSTATUS NTAPI myNtQuerySection(
 
 
 
-void modify_nt_headers(const char* input);
 
 
 typedef struct _OBJECT_ATTRIBUTES {
@@ -225,20 +224,20 @@ char tramp2[13] = {
 	0x49, 0xBA, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,         // mov r10, NEW_LOC_@ddress
 	0x41, 0xFF, 0xE2                                                    // jmp r10
 };
-char tramp2_old[13];
+char tramp2_old[13]; /*Thanks Adepts of 0xCC*/
+
+
+/*Not Used*/
 
 
 
 
 
-using myNtCreateSection = NTSTATUS(NTAPI*)(OUT PHANDLE SectionHandle, IN ULONG DesiredAccess, IN POBJECT_ATTRIBUTES ObjectAttributes OPTIONAL, IN PLARGE_INTEGER MaximumSize OPTIONAL, IN ULONG PageAttributess, IN ULONG SectionAttributes, IN HANDLE FileHandle OPTIONAL);
-
-NTSTATUS ntCreateMySection(OUT PHANDLE SectionHandle, IN ULONG DesiredAccess, IN POBJECT_ATTRIBUTES ObjectAttributes OPTIONAL, IN PLARGE_INTEGER MaximumSize OPTIONAL, IN ULONG PageAttributess, IN ULONG SectionAttributes, IN HANDLE FileHandle OPTIONAL);
 
 
 NTSTATUS hooked_ntmap(HANDLE SectionHandle, HANDLE ProcessHandle, PVOID* BaseAddress, ULONG_PTR ZeroBits, SIZE_T CommitSize, PLARGE_INTEGER SectionOffset, PSIZE_T ViewSize, DWORD InheritDisposition, ULONG AllocationType, ULONG Win32Protect);
 
-BOOL hook_ntmap(HANDLE hProc)
+BOOL hook_ntmap(HANDLE hProc) /*Function to hook NtMapViewOfSection*/
 {
 	myNtMapViewOfSection NtMap;
 	NtMap = (myNtMapViewOfSection)GetProcAddress(GetModuleHandleA("NTDLL.dll"), "NtMapViewOfSection");
@@ -250,11 +249,11 @@ BOOL hook_ntmap(HANDLE hProc)
 	VirtualProtect(NtMap, sizeof NtMap, PAGE_EXECUTE_READWRITE, &written3);
 
 
-	void* shit2 = (void*)hooked_ntmap;
+	void* hook_addr = (void*)hooked_ntmap;
 
 
-	memcpy(tramp2_old, NtMap, sizeof tramp2_old);
-	memcpy(&tramp2[2], &shit2, sizeof shit2);
+	memcpy(tramp2_old, NtMap, sizeof tramp2_old); /*Save the value previous to hooking*/
+	memcpy(&tramp2[2], &hook_addr, sizeof hook_addr);
 
 	DWORD old3;
 
@@ -279,7 +278,7 @@ BOOL restore_ntmap(HANDLE SectionHandle,
 	PSIZE_T ViewSize,
 	DWORD InheritDisposition,
 	ULONG AllocationType,
-	ULONG Win32Protect)
+	ULONG Win32Protect) /*Restore NtMapViewOfSection to previous hooking*/
 {
 	HANDLE hProc = OpenProcess(PROCESS_ALL_ACCESS, NULL, GetCurrentProcessId());
 	myNtMapViewOfSection NtMap;
@@ -302,15 +301,13 @@ BOOL restore_ntmap(HANDLE SectionHandle,
 	return 1;
 
 }
-BOOL passed_ntmap = 0;
-BOOL passed_ntcreate = 0;
 
 
 BOOL restore_hook_image_notification(HANDLE SectionHandle, HANDLE ProcessHandle, PVOID* BaseAddress, ULONG_PTR ZeroBits, SIZE_T CommitSize, PLARGE_INTEGER SectionOffset, PSIZE_T ViewSize, DWORD InheritDisposition, ULONG AllocationType, ULONG Win32Protect)
 {
 	restore_ntmap(SectionHandle, ProcessHandle, BaseAddress, ZeroBits, CommitSize, SectionOffset, ViewSize, InheritDisposition, AllocationType, Win32Protect);
 	/*	HANDLE hProc = OpenProcess(PROCESS_ALL_ACCESS, NULL, GetCurrentProcessId());
-		hook_ntmap(hProc);*/
+		hook_ntmap(hProc);*/ /*If you want to always have the function hooked after calling the real NtMapViewOfSection (encrypt memory in malware)*/
 	return TRUE;
 
 }
@@ -331,8 +328,8 @@ NTSTATUS hooked_ntmap(HANDLE SectionHandle, HANDLE ProcessHandle, PVOID* BaseAdd
 {
 	oldHeaders = (PIMAGE_DOS_HEADER)malloc(sizeof(IMAGE_DOS_HEADER));
 	oldNtHeaders = (PIMAGE_NT_HEADERS64)malloc(sizeof(IMAGE_NT_HEADERS64));
-
-	myNtQuerySection* NtQuerySection = (myNtQuerySection*)GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtQuerySection");
+	/*Not used, we tried to modify the PE32 magic bytes in the Section before it's mapped, but after some try/error it seems not possible*/
+	myNtQuerySection* NtQuerySection = (myNtQuerySection*)GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtQuerySection"); 
 	SECTION_IMAGE_INFORMATION section;
 	NTSTATUS status;
 
@@ -353,7 +350,7 @@ NTSTATUS hooked_ntmap(HANDLE SectionHandle, HANDLE ProcessHandle, PVOID* BaseAdd
 	__try
 	{
 
-		DWORD oldProtection, oldProtection_dos, oldProtection_nt;
+		DWORD oldProtection, oldProtection_dos, oldProtection_nt; /*Modify NT / DOS Headers to fuzzer input*/
 		LPVOID imageBase = GetModuleHandleA(NULL);
 		PIMAGE_DOS_HEADER dosHeaders = (PIMAGE_DOS_HEADER)imageBase;
 		PIMAGE_NT_HEADERS64 ntHeaders = (PIMAGE_NT_HEADERS64)((unsigned long long)imageBase + dosHeaders->e_lfanew);
@@ -384,13 +381,14 @@ NTSTATUS hooked_ntmap(HANDLE SectionHandle, HANDLE ProcessHandle, PVOID* BaseAdd
 
 
 		BOOL restore = restore_hook_image_notification(SectionHandle, ProcessHandle, BaseAddress, ZeroBits, CommitSize, SectionOffset, ViewSize, InheritDisposition, AllocationType, Win32Protect);
-		memcpy(dosHeaders, oldHeaders, sizeof(IMAGE_DOS_HEADER));
+		memcpy(dosHeaders, oldHeaders, sizeof(IMAGE_DOS_HEADER)); /*Restore the old headers after calling real NtMapViewOfSection*/
 		memcpy(ntHeaders, oldNtHeaders, sizeof(IMAGE_DOS_HEADER));
 
 	}
 	__except (filter(GetExceptionCode()))
 	{
 		BOOL restore = restore_hook_image_notification(SectionHandle, ProcessHandle, BaseAddress, ZeroBits, CommitSize, SectionOffset, ViewSize, InheritDisposition, AllocationType, Win32Protect);
+		/*In case the modification of headers crashes we call NtMapViewOfSection (To avoid fake fuzzer crashes)*/
 
 	}
 
@@ -403,74 +401,7 @@ NTSTATUS hooked_ntmap(HANDLE SectionHandle, HANDLE ProcessHandle, PVOID* BaseAdd
 
 
 
-/*ntCreateSection Hook*/
-
-char tramp_ntcreatesection[13] = {
-	0x49, 0xBA, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,         // mov r10, NEW_LOC_@ddress
-	0x41, 0xFF, 0xE2                                                    // jmp r10
-};
-char tramp_old_ntcreatesection[13];
-
-BOOL restore_hook_ntcreatesection(OUT PHANDLE SectionHandle, IN ULONG DesiredAccess, IN POBJECT_ATTRIBUTES ObjectAttributes OPTIONAL, IN PLARGE_INTEGER MaximumSize OPTIONAL, IN ULONG PageAttributess, IN ULONG SectionAttributes, IN HANDLE FileHandle OPTIONAL);
-NTSTATUS ntCreateMySection(OUT PHANDLE SectionHandle, IN ULONG DesiredAccess, IN POBJECT_ATTRIBUTES ObjectAttributes OPTIONAL, IN PLARGE_INTEGER MaximumSize OPTIONAL, IN ULONG PageAttributess, IN ULONG SectionAttributes, IN HANDLE FileHandle OPTIONAL)
-{
-
-	NTSTATUS status = restore_hook_ntcreatesection(SectionHandle, DesiredAccess, ObjectAttributes, MaximumSize, PageAttributess, SectionAttributes, FileHandle);
-	return status;
-}
 
 
-BOOL hook_ntcreatesection(HANDLE hProc);
-BOOL restore_hook_ntcreatesection(OUT PHANDLE SectionHandle, IN ULONG DesiredAccess, IN POBJECT_ATTRIBUTES ObjectAttributes OPTIONAL, IN PLARGE_INTEGER MaximumSize OPTIONAL, IN ULONG PageAttributess, IN ULONG SectionAttributes, IN HANDLE FileHandle OPTIONAL)
-{
-	HANDLE hProc = OpenProcess(PROCESS_ALL_ACCESS, NULL, GetCurrentProcessId());
-	myNtCreateSection NtCreate;
-	NtCreate = (myNtCreateSection)GetProcAddress(GetModuleHandleA("NTDLL.dll"), "NtCreateSection");
-	DWORD written2, written3;
 
-
-	VirtualProtect(NtCreate, sizeof NtCreate, PAGE_EXECUTE_READWRITE, &written2);
-	VirtualProtect(tramp_old_ntcreatesection, sizeof tramp_old_ntcreatesection, PAGE_EXECUTE_READWRITE, &written3);
-
-	//WriteProcessMemory(hProc, &CreateProcessInternalW, &hook_CreateProcessA, sizeof CreateProcessInternalW, NULL);
-	//WriteProcessMemory(hProc, &CreateProcessInternalW2, &hook_CreateProcessA, sizeof CreateProcessInternalW2, NULL);
-	if (!WriteProcessMemory(hProc, NtCreate, &tramp_old_ntcreatesection, sizeof tramp_old_ntcreatesection, NULL))
-	{
-		return FALSE;
-	}
-	NtCreate(SectionHandle, DesiredAccess, ObjectAttributes, MaximumSize, PageAttributess, SectionAttributes, FileHandle);
-	//hook_ntcreatesection(hProc);
-	return 1;
-
-}
-BOOL hook_ntcreatesection(HANDLE hProc)
-{
-	myNtCreateSection NtCreate;
-	NtCreate = (myNtCreateSection)GetProcAddress(GetModuleHandleA("NTDLL.dll"), "NtCreateSection");
-	if (!NtCreate)
-		exit(-1);
-	DWORD written3;
-
-
-	VirtualProtect(NtCreate, sizeof NtCreate, PAGE_EXECUTE_READWRITE, &written3);
-
-	//WriteProcessMemory(hProc, &CreateProcessInternalW, &hook_CreateProcessA, sizeof CreateProcessInternalW, NULL);
-	//WriteProcessMemory(hProc, &CreateProcessInternalW2, &hook_CreateProcessA, sizeof CreateProcessInternalW2, NULL);
-	void* shit3 = (void*)ntCreateMySection;
-
-
-	memcpy(tramp_old_ntcreatesection, NtCreate, sizeof tramp_old_ntcreatesection);
-	memcpy(&tramp_ntcreatesection[2], &shit3, sizeof shit3);
-
-	DWORD old3;
-
-	VirtualProtect(tramp2, sizeof tramp_ntcreatesection, PAGE_EXECUTE_READWRITE, &old3);
-
-
-	if (!WriteProcessMemory(hProc, (LPVOID*)NtCreate, &tramp_ntcreatesection, sizeof tramp_ntcreatesection, NULL))
-	{
-		return -1;
-	}
-	return 1;
-}
 
